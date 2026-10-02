@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Model weights and exported graphs (large, not versioned)
+checkpoints/
+
+# Pipeline outputs
+data/**/output/
+
+# macOS
+.DS_Store

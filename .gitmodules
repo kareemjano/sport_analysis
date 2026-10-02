@@ -1,0 +1,9 @@
+[submodule "efficientsam3"]
+	path = efficientsam3
+	url = https://github.com/kareemjano/efficientsam3.git
+[submodule "ViTPose"]
+	path = ViTPose
+	url = https://github.com/kareemjano/ViTPose.git
+[submodule "mmcv"]
+	path = mmcv
+	url = https://github.com/open-mmlab/mmcv.git

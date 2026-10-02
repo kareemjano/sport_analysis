@@ -1,0 +1,9 @@
+torch
+torchvision
+transformers
+scipy
+matplotlib
+numpy
+pandas
+opencv-python-headless
+onnxruntime

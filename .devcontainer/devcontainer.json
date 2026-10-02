@@ -1,0 +1,21 @@
+{
+	"name": "SAM Export",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"context": ".."
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-python.vscode-pylance",
+				"ms-toolsai.jupyter"
+			],
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python"
+			}
+		}
+	},
+	"postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+	"remoteUser": "vscode"
+}
