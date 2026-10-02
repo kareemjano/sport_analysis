@@ -2,6 +2,17 @@
 
 Video analysis for bouldering: segment and track climbing holds, group them into routes, and estimate the climber's pose.
 
+## Capabilities
+
+- **Main climber identification** with SAM3 (`"person"` prompt) and ViTPose+ keypoints
+- **Hold detection and tracking** with SAM3 on keyframes and camera motion in between (ORB features + RANSAC homography)
+- **Route grouping** by hold color and position (hierarchical clustering)
+- **Automatic active route detection** from the hands and feet on a route's holds
+- **Attempt start and end** detection, with several attempts per video
+- **Attempt success / fail** (both hands held on the top hold vs. fall or not reaching it)
+- **Attempt metrics**: time, vertical / horizontal distance, holds used
+- **PyTorch or ONNX Runtime**, SAM3 or EfficientSAM3 models
+
 ## Setup
 
 ```bash
@@ -62,7 +73,7 @@ Metrics per attempt, from the hip trajectory mapped into the wall coordinates of
 | `time_s` | start of the 3-limb streak → success / fail |
 | `vertical_*`, `horizontal_*` | distance travelled by the hips per axis: path length of the smoothed trajectory, counting moves ≥ `--move-step` (0.1 body chain ≈ 14 cm) so pose jitter doesn't add up; frame px and m |
 | `net_height_*` | start hip height → highest hip height |
-| `holds_used_pct` | route holds touched by a hand or foot / route holds seen |
+| `holds_used_pct` | route holds a hand or foot stayed on for `--touch-seconds` (0.1; filters one-frame pose glitches) / route holds seen |
 
 Thresholds can be tuned without re-running the models: `--rejudge` re-evaluates the poses saved in `<output>_climb.json` with the given `ClimbConfig` flags and re-renders.
 

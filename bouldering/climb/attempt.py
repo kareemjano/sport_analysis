@@ -44,6 +44,7 @@ class AttemptTracker:
         self.current: Optional[Attempt] = None
         self.candidate = None  # {route, since, last, keyframe, touched}: a possible attempt start
         self.last_any_contact = -np.inf
+        self.contact_since = {}  # (limb, hold) -> first frame of the current contact streak
 
     def seconds(self, frames):
         return frames / self.fps
@@ -55,6 +56,8 @@ class AttemptTracker:
         on_hold = {limb: c for limb, c in contacts.items() if c is not None}
         if on_hold:
             self.last_any_contact = frame_no
+        self.contact_since = {(limb, c["hold"]): self.contact_since.get((limb, c["hold"]), frame_no)
+                              for limb, c in on_hold.items()}
         if self.state == SEARCHING:
             self._search(frame_no, on_hold)
         elif self.state == CLIMBING:
@@ -75,7 +78,7 @@ class AttemptTracker:
             if cand is not None and self.seconds(frame_no - cand["last"]) > self.cfg.contact_gap_seconds:
                 self.candidate = None
             return
-        holds = {c["hold"] for c in on_hold.values() if c["route"] == best}
+        holds = self._held(frame_no, on_hold, best)
         if cand is None or cand["route"] != best:
             cand = self.candidate = {"route": best, "since": frame_no, "last": frame_no, "touched": holds,
                                      "keyframe": self.routes.frames[frame_no]["keyframe"]}
@@ -107,7 +110,7 @@ class AttemptTracker:
         a.last_seen = frame_no
 
         on_route = {limb: c for limb, c in on_hold.items() if c["route"] == a.route}
-        a.touched.update(c["hold"] for c in on_route.values())
+        a.touched.update(self._held(frame_no, on_route, a.route))
         if on_route:
             a.last_contact = frame_no
 
@@ -140,6 +143,12 @@ class AttemptTracker:
         if off_route >= cfg.fall_seconds and (drop is None and off_route >= cfg.lost_seconds
                                               or drop is not None and drop >= cfg.fall_drop):
             self._finish(frame_no, FAIL, "fell")
+
+    def _held(self, frame_no, on_hold, route):
+        """Holds of `route` a limb has stayed on for touch_seconds (single-frame pose glitches don't count)."""
+        return {c["hold"] for limb, c in on_hold.items()
+                if c["route"] == route
+                and self.seconds(frame_no - self.contact_since[(limb, c["hold"])]) >= self.cfg.touch_seconds}
 
     def _finish(self, frame_no, result, reason):
         a = self.current

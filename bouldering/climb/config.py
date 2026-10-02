@@ -12,6 +12,7 @@ class ClimbConfig:
     foot_ext: float = 0.15  # foot = ankle + this fraction of the knee -> ankle vector
     # contacts
     contact_radius: float = 0.06  # a limb touches a hold within this distance (x body length)
+    touch_seconds: float = 0.1  # a hold counts as used once a limb stays on it this long (one-frame pose glitches don't)
     contact_gap_seconds: float = 0.4  # start / top streaks survive contacts missed for this long (pose jitter)
     # attempt start / end
     start_limbs: int = 3  # limbs on one route's holds to start an attempt
