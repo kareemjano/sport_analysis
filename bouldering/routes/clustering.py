@@ -8,8 +8,12 @@ from scipy.spatial.distance import squareform
 from .config import UNASSIGNED, RouteConfig
 
 
-def hold_features(masks, bgr):
-    """Median CIELAB color (L in 0..100, a/b centered) and centroid (x, y) / width per hold."""
+def hold_features(masks, bgr, exclude=None):
+    """Median CIELAB color (L in 0..100, a/b centered) and centroid (x, y) / width per hold.
+
+    exclude: optional bool mask of pixels not to measure colors on (e.g. the climber in front of a
+    hold); a hold with fewer than 5 visible pixels gets a NaN color.
+    """
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
     lab[..., 0] *= 100 / 255
     lab[..., 1:] -= 128
@@ -17,21 +21,17 @@ def hold_features(masks, bgr):
     colors, centers = [], []
     w = bgr.shape[1]
     for m in masks:
-        core = cv2.erode(m.astype(np.uint8), kernel) > 0  # avoid edge pixels mixed with the wall
-        pix = lab[core if core.sum() >= 5 else m]
-        colors.append(np.median(pix, axis=0))
+        visible = m & ~exclude if exclude is not None else m
+        core = cv2.erode(visible.astype(np.uint8), kernel) > 0  # avoid edge pixels mixed with the wall
+        pix = lab[core if core.sum() >= 5 else visible]
+        colors.append(np.median(pix, axis=0) if len(pix) >= 5 else np.full(3, np.nan))
         ys, xs = np.nonzero(m)
         centers.append([xs.mean() / w, ys.mean() / w])
     return np.array(colors).reshape(-1, 3), np.array(centers).reshape(-1, 2)
 
 
-def cluster_routes(colors, centers, cfg: RouteConfig):
-    """Cluster holds into routes. Returns a cluster label per hold (0..k-1) or UNASSIGNED."""
-    n = len(colors)
-    if n == 0:
-        return np.zeros(0, int)
-    if n == 1:
-        return np.full(1, UNASSIGNED)
+def route_distances(colors, centers, cfg: RouteConfig):
+    """Pairwise hold distance for route clustering: holds closer than 1.0 link up (single linkage)."""
     L, a, b = colors[:, 0], colors[:, 1], colors[:, 2]
     chroma, hue = np.hypot(a, b), np.degrees(np.arctan2(b, a))
     colored = chroma >= cfg.min_chroma
@@ -51,10 +51,53 @@ def cluster_routes(colors, centers, cfg: RouteConfig):
     # colored vs gray holds, or clearly different hues, never join
     dist[~(both_colored | both_gray) | (both_colored & (d_hue > cfg.max_hue_diff))] = 1e6
     np.fill_diagonal(dist, 0)
+    return dist
+
+
+def cluster_routes(colors, centers, cfg: RouteConfig, dist=None):
+    """Cluster holds into routes. Returns a cluster label per hold (0..k-1) or UNASSIGNED."""
+    n = len(colors)
+    if n == 0:
+        return np.zeros(0, int)
+    if n == 1:
+        return np.full(1, UNASSIGNED)
+    dist = route_distances(colors, centers, cfg) if dist is None else dist
     labels = fcluster(linkage(squareform(dist, checks=False), method="single"), t=1.0, criterion="distance") - 1
     sizes = np.bincount(labels)
     labels = np.where(sizes[labels] >= cfg.min_route_holds, labels, UNASSIGNED)
     return labels
+
+
+def extend_routes(hold_ids, hold_route, colors, centers, cfg: RouteConfig, next_route_id):
+    """Keep the routes of known holds; attach new / unassigned holds to them or form new routes.
+
+    Re-clustering everything on every keyframe lets routes merge, split and swap ids as a few
+    holds come and go (e.g. uncovered by the climber), so a route being climbed could change
+    under the climber. Here a known hold never changes route; a new or unassigned hold joins
+    the route of the closest assigned hold within the clustering distance (repeatedly, so new
+    holds can chain), and the remaining ones are clustered among themselves.
+    hold_route: {hold id: route id or UNASSIGNED} from the previous keyframe.
+    """
+    route_ids = np.array([hold_route.get(int(h), UNASSIGNED) for h in hold_ids], int)
+    free = [i for i, h in enumerate(hold_ids) if hold_route.get(int(h), UNASSIGNED) == UNASSIGNED]
+    if not free:
+        return route_ids, next_route_id
+    dist = route_distances(colors, centers, cfg)
+    changed = True
+    while changed:
+        changed = False
+        assigned = np.nonzero(route_ids != UNASSIGNED)[0]
+        for i in [i for i in free if route_ids[i] == UNASSIGNED]:
+            if len(assigned) and dist[i, assigned].min() <= 1.0:
+                route_ids[i] = route_ids[assigned[dist[i, assigned].argmin()]]
+                changed = True
+    rest = np.array([i for i in free if route_ids[i] == UNASSIGNED], int)
+    if len(rest) >= cfg.min_route_holds:
+        labels = cluster_routes(colors[rest], centers[rest], cfg, dist[np.ix_(rest, rest)])
+        for c in sorted(set(labels.tolist()) - {UNASSIGNED}):
+            route_ids[rest[labels == c]] = next_route_id
+            next_route_id += 1
+    return route_ids, next_route_id
 
 
 def stable_route_ids(labels, hold_ids, prev_routes, next_route_id):

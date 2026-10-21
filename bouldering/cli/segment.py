@@ -16,7 +16,7 @@ def add_arguments(parser):
     parser.add_argument("--image", default=str(DEFAULT_IMAGE))
     parser.add_argument("--prompt", default="climbing hold")
     parser.add_argument("--output", default=None,
-                        help="default: data/bouldering/output/segment_<model variant>[_p-<prompt>].png")
+                        help="default: data/bouldering/output/<image name>/segment_<model variant>[_p-<prompt>].png")
     parser.add_argument("--score-thresh", type=float, default=0.5)
     parser.add_argument("--alpha", type=float, default=0.45, help="mask overlay opacity")
     add_model_args(parser)

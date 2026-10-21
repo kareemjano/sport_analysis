@@ -2,10 +2,11 @@
 import cv2
 
 from ..common.visualization import color_for, draw_masks, open_video_writer
-from ..pose.vitpose import draw_poses
+from ..pose.drawing import draw_poses
 from ..routes.config import UNASSIGNED, UNASSIGNED_COLOR
 from ..routes.data import RouteData
 from .attempt import CLIMBING, FAIL, SUCCESS
+from .contacts import limb_holds
 from .pipeline import load_climb
 
 ON_ROUTE, OFF_ROUTE = (0, 255, 0), (0, 165, 255)  # BGR
@@ -52,7 +53,8 @@ def draw_frame(bgr, routes, fr, alpha=0.45, kpt_thresh=0.3):
         for limb, c in (fr["contacts"] or {}).items():
             p = (fr["limbs"] or {}).get(limb)
             if c is not None and p is not None:
-                on = c["route"] == active if active is not None else c["route"] != UNASSIGNED
+                routes_touched = {r for _, r in limb_holds(c)}
+                on = active in routes_touched if active is not None else bool(routes_touched - {UNASSIGNED})
                 highlight[tuple(p)] = ON_ROUTE if on else OFF_ROUTE
         vis = draw_poses(vis, [fr["box"]], [{"keypoints": fr["keypoints"], "scores": fr["scores"]}], kpt_thresh,
                          highlight=highlight, draw_boxes=False)

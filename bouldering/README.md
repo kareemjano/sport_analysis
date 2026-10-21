@@ -11,7 +11,7 @@ Video analysis for bouldering: segment and track climbing holds, group them into
 - **Attempt start and end** detection, with several attempts per video
 - **Attempt success / fail** (both hands held on the top hold vs. fall or not reaching it)
 - **Attempt metrics**: time, vertical / horizontal distance, holds used
-- **PyTorch or ONNX Runtime**, SAM3 or EfficientSAM3 models
+- **PyTorch or ONNX Runtime** for SAM3 and ViTPose, SAM3 or EfficientSAM3 models
 
 ## Setup
 
@@ -27,7 +27,7 @@ Model weights go in `checkpoints/` (gitignored):
 | `sam3_litetext_mobileclip_s0_ctx16.pt` | `track`, `routes` (default), `export-onnx`; tracker weights for EfficientSAM3 |
 | `sam3_litetext_mobileclip_s1_ctx32.pt` | `segment` (default) |
 | `efficientsam3_{tinyvit,repvit,efficientvit}.pt` | `--model efficientsam3` |
-| `onnx_sam3_litetext_s0/` | `--backend onnx` (written by `export-onnx`) |
+| `onnx_sam3_litetext_s0/` | `--backend onnx` (written by `export-onnx`): SAM3 graphs + `vitpose.onnx` / `vitpose.json` |
 
 ## Commands
 
@@ -41,15 +41,18 @@ python -m bouldering routes --backend onnx
 python -m bouldering climb --backend onnx --stride 2                    # judge attempts on the routes (pose)
 python -m bouldering segment                                           # single image, text prompt
 python -m bouldering pose                                              # climber pose (SAM3 person + ViTPose+-S)
-python -m bouldering export-onnx                                       # once, for --backend onnx
+python -m bouldering export-onnx                                       # once, for --backend onnx (SAM3 + ViTPose)
+python -m bouldering export-onnx --only vitpose                        # just the pose model
 ```
 
-Add `--render-only` to `track` / `routes` to re-render the video from saved results without running a model. `python -m bouldering <command> --help` lists all options.
+Add `--render-only` to `track` / `routes` to re-render the video from saved results without running a model.
+
+Hold detection while the camera is still: `routes` / `climb` re-detect holds every `--max-keyframe-interval` (30) frames so holds the climber uncovers are found (known holds keep their id and route; duplicates are merged, holds missed for `--max-missed-keyframes` keyframes are dropped; `0` = only on camera motion, faster), with `--det-score-thresh` 0.3 so small / dark holds are found (`track` keeps 0.5). SAM3 detections are cached in `<name>_detections/`, so `climb --rerun-routes` recomputes routes after changing route options without running SAM3 again. `python -m bouldering <command> --help` lists all options.
 
 Unless `--output` is given, outputs are named after the parameters so different runs don't overwrite each other:
 
 ```
-<method>_<model>_<backend>[_p-<prompt>][_from<start>][_s<stride>][_n<max frames>].mp4
+<method>_<model>_<backend>[_p-<prompt>][_det<det score thresh>][_kf<max keyframe interval>] (only when not the default)[_from<start>][_s<stride>][_n<max frames>].mp4
 
 method   tracker (track: SAM3 tracker) | motion (routes: camera-motion warping) | climb | segment | pose
 model    sam3-s0 | esam3-tinyvit-11m-s0 | ...   (with --backend onnx: read from the export's config.json)
@@ -60,6 +63,8 @@ e.g. `tracker_sam3-s0_onnx_s3_n60.mp4`, `motion_esam3-repvit-m1.1-s0_torch.mp4`.
 ## Climb: judging attempts
 
 `climb` reads the `routes` output for the same options (and runs `routes` first if it is missing), finds the climber with SAM3 (`"person"` prompt — no extra detector) and ViTPose+-S, and follows the hands and feet (extrapolated past wrists / ankles) on the hold masks.
+
+[climb/README.md](climb/README.md) explains how the pipeline works: the two loops over the video, and when holds are detected, routes clustered, and the climber and their keypoints found.
 
 - **Start**: `--start-limbs` (3) limbs on one route's holds for `--start-seconds` (0.5); contacts missed for up to `--contact-gap-seconds` (0.4) don't break the streak (also for the top). From then on only that route is shown in color; the other routes are disabled (gray).
 - **Success**: `--top-hands` (2) hands on the route's top hold (highest hold in view) for `--top-seconds` (1.0).
@@ -74,6 +79,8 @@ Metrics per attempt, from the hip trajectory mapped into the wall coordinates of
 | `vertical_*`, `horizontal_*` | distance travelled by the hips per axis: path length of the smoothed trajectory, counting moves ≥ `--move-step` (0.1 body chain ≈ 14 cm) so pose jitter doesn't add up; frame px and m |
 | `net_height_*` | start hip height → highest hip height |
 | `holds_used_pct` | route holds a hand or foot stayed on for `--touch-seconds` (0.1; filters one-frame pose glitches) / route holds seen |
+
+A limb counts for every hold within `--contact-radius` (0.1 body chain) — a hand gripping the edge of a big hold next to a small one counts for both routes.
 
 Thresholds can be tuned without re-running the models: `--rejudge` re-evaluates the poses saved in `<output>_climb.json` with the given `ClimbConfig` flags and re-renders.
 
@@ -102,7 +109,7 @@ bouldering/
   tracking/            detect-and-track pipeline (PyTorch + ONNX), mask storage, runner / renderer
   routes/              keyframe detection, camera motion, hold registry, route clustering, output reader, renderer
   pose/                ViTPose+ keypoints on person boxes
-  climb/               climber tracking (SAM3 person + pose), hold contacts, attempt state machine, metrics, renderer
+  climb/               climber tracking (SAM3 person + pose), hold contacts, attempt state machine, metrics, renderer (see climb/README.md)
   cli/                 one module per command (argument parsing only)
 ```
 

@@ -1,7 +1,7 @@
 """Judge climbing attempts on the detected routes: start, success / fail, distance, time and holds used.
 
 Uses the `routes` output for the same video and options (runs `routes` first if it is missing),
-finds the climber with SAM3 ("person" prompt) and ViTPose+, and writes <output>.mp4 and
+finds the climber with SAM3 ("person" prompt) and ViTPose+ (both on ONNX Runtime with --backend onnx), and writes <output>.mp4 and
 <output>_climb.json (per-frame pose / contacts / state and a summary per attempt).
 
 Examples:
@@ -15,17 +15,20 @@ import time
 
 from ..climb.config import ClimbConfig
 from ..routes.config import RouteConfig
-from .common import (add_backend_args, add_dataclass_args, add_run_args, build_pipeline, dataclass_from_args,
-                     default_output_name, resolve_output)
+from .common import (ROUTES_DET_SCORE_THRESH, add_backend_args, add_dataclass_args, add_run_args, build_pipeline, build_pose_estimator,
+                     dataclass_from_args, default_output_name, resolve_output)
 
 
 def add_arguments(parser):
-    add_run_args(parser)
+    add_run_args(parser, det_score_thresh=ROUTES_DET_SCORE_THRESH)
     parser.add_argument("--rejudge", action="store_true",
                         help="re-judge the poses saved by a previous run with the current ClimbConfig (no models), "
                              "then render")
+    parser.add_argument("--rerun-routes", action="store_true",
+                        help="recompute the routes even if their output exists (hold detections are reused "
+                             "from the cache), e.g. after changing route options")
     parser.add_argument("--routes-json", default=None,
-                        help="routes output to use (default: the `routes` output for the same options)")
+                        help="routes output to use (default: the `routes` output for the same options, in the --output folder)")
     add_backend_args(parser)
     add_dataclass_args(parser, ClimbConfig, "attempt judging (ClimbConfig)")
     add_dataclass_args(parser, RouteConfig, "route pipeline (RouteConfig), if routes have to be computed")
@@ -44,7 +47,6 @@ def _print_summary(attempts):
 
 def run(args):
     from ..climb import ClimberTracker, render_climb, run_climb
-    from ..pose import PoseEstimator
     from ..routes import HoldDetector, RouteData, run_routes
 
     t_start = time.perf_counter()
@@ -58,14 +60,16 @@ def run(args):
     elif not args.render_only:
         cfg = dataclass_from_args(ClimbConfig, args)
         pipeline = build_pipeline(args)  # one SAM3 model for holds (if needed) and the climber
-        if not os.path.exists(routes_json):
-            print(f"{routes_json} not found; running the route pipeline first")
-            run_routes(HoldDetector(pipeline), dataclass_from_args(RouteConfig, args), args.video,
+        if args.rerun_routes or not os.path.exists(routes_json):
+            print(f"Running the route pipeline -> {routes_json}")
+            detector = HoldDetector(pipeline, cache_dir=routes_json[: -len("_routes.json")] + "_detections",
+                                    video=args.video, person_prompt=args.person_prompt, person_score=args.person_score)
+            run_routes(detector, dataclass_from_args(RouteConfig, args), args.video,
                        os.path.splitext(routes_json)[0], routes_json,
                        start=args.start, stride=args.stride, max_frames=args.max_frames, prompt=args.prompt)
         routes = RouteData(routes_json)
         fps = _video_fps(args.video)
-        tracker = ClimberTracker(pipeline, PoseEstimator(), cfg, fps)
+        tracker = ClimberTracker(pipeline, build_pose_estimator(args), cfg, fps)
         attempts = run_climb(tracker, routes, args.video, cfg, climb_json, start=args.start, max_frames=args.max_frames)
     else:
         from ..climb import load_climb

@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from ..routes.config import UNASSIGNED
+from .contacts import limb_holds
 from .limbs import HANDS, body_length, hip_center
 from .metrics import attempt_metrics
 
@@ -56,8 +57,8 @@ class AttemptTracker:
         on_hold = {limb: c for limb, c in contacts.items() if c is not None}
         if on_hold:
             self.last_any_contact = frame_no
-        self.contact_since = {(limb, c["hold"]): self.contact_since.get((limb, c["hold"]), frame_no)
-                              for limb, c in on_hold.items()}
+        self.contact_since = {(limb, h): self.contact_since.get((limb, h), frame_no)
+                              for limb, c in on_hold.items() for h, _ in limb_holds(c)}
         if self.state == SEARCHING:
             self._search(frame_no, on_hold)
         elif self.state == CLIMBING:
@@ -68,9 +69,9 @@ class AttemptTracker:
 
     def _search(self, frame_no, on_hold):
         counts = {}
-        for c in on_hold.values():
-            if c["route"] != UNASSIGNED:
-                counts[c["route"]] = counts.get(c["route"], 0) + 1
+        for c in on_hold.values():  # a limb counts once for every route it touches
+            for r in {r for _, r in limb_holds(c)} - {UNASSIGNED}:
+                counts[r] = counts.get(r, 0) + 1
         best = max(counts, key=counts.get) if counts else None
         cand = self.candidate
         if best is None or counts[best] < self.cfg.start_limbs:
@@ -109,7 +110,7 @@ class AttemptTracker:
             return
         a.last_seen = frame_no
 
-        on_route = {limb: c for limb, c in on_hold.items() if c["route"] == a.route}
+        on_route = {limb: c for limb, c in on_hold.items() if limb_holds(c, a.route)}
         a.touched.update(self._held(frame_no, on_route, a.route))
         if on_route:
             a.last_contact = frame_no
@@ -130,7 +131,8 @@ class AttemptTracker:
                 if a.body_lengths:
                     drop = (hip[1] - a.best_y) / float(np.median(a.body_lengths))
 
-        hands_on_top = sum(1 for limb in HANDS if limb in on_route and on_route[limb]["hold"] == a.top_hold)
+        hands_on_top = sum(1 for limb in HANDS
+                           if limb in on_route and a.top_hold in {h for h, _ in limb_holds(on_route[limb], a.route)})
         if hands_on_top >= cfg.top_hands:
             a.top_since = frame_no if a.top_since is None else a.top_since
             a.top_last = frame_no
@@ -146,9 +148,8 @@ class AttemptTracker:
 
     def _held(self, frame_no, on_hold, route):
         """Holds of `route` a limb has stayed on for touch_seconds (single-frame pose glitches don't count)."""
-        return {c["hold"] for limb, c in on_hold.items()
-                if c["route"] == route
-                and self.seconds(frame_no - self.contact_since[(limb, c["hold"])]) >= self.cfg.touch_seconds}
+        return {h for limb, c in on_hold.items() for h, _ in limb_holds(c, route)
+                if self.seconds(frame_no - self.contact_since[(limb, h)]) >= self.cfg.touch_seconds}
 
     def _finish(self, frame_no, result, reason):
         a = self.current

@@ -6,12 +6,12 @@ class ClimbConfig:
     # climber detection (SAM3 text prompt) and pose
     person_prompt: str = "person"
     person_score: float = 0.5
-    redetect_seconds: float = 5.0  # re-run SAM3 person detection at least this often
+    redetect_seconds: float = 2.0  # re-run SAM3 person detection at least this often
     kpt_thresh: float = 0.3  # keypoints below this score are ignored
     hand_ext: float = 0.35  # hand = wrist + this fraction of the elbow -> wrist vector
     foot_ext: float = 0.15  # foot = ankle + this fraction of the knee -> ankle vector
     # contacts
-    contact_radius: float = 0.06  # a limb touches a hold within this distance (x body length)
+    contact_radius: float = 0.1  # a limb touches a hold within this distance (x body length); a hand on the edge of a big hold sits ~0.05-0.08 away
     touch_seconds: float = 0.1  # a hold counts as used once a limb stays on it this long (one-frame pose glitches don't)
     contact_gap_seconds: float = 0.4  # start / top streaks survive contacts missed for this long (pose jitter)
     # attempt start / end

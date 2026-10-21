@@ -28,9 +28,9 @@ import cv2
 import numpy as np
 
 from ..common.masks import pack_masks
-from .clustering import cluster_routes, hold_features, route_summary, stable_route_ids
+from .clustering import cluster_routes, extend_routes, hold_features, route_summary, stable_route_ids
 from .config import UNASSIGNED, RouteConfig
-from .holds import update_holds
+from .holds import HoldRegistry
 from .motion import CameraMotion, plausible, uncovered_fraction
 
 
@@ -56,7 +56,9 @@ def run_routes(detector, cfg: RouteConfig, video_path, data_dir, json_path, star
         "video": str(video_path), "frame_size": [fw, fh], "work_size": [work_hw[1], work_hw[0]],
         "stride": stride, "prompt": prompt, "config": asdict(cfg), "keyframes": [], "frames": [],
     }
-    holds, routes, next_hold_id, next_route_id = {}, {}, 1, 0
+    registry, routes, next_route_id = HoldRegistry(cfg), {}, 0
+    hold_colors = {}  # hold id -> color when it was last seen without the climber in front
+    hold_route = {}  # hold id -> route id (or UNASSIGNED); kept for retired holds, which can come back
     key_feats = prev_feats = None
     H_key_prev = np.eye(3)
     last_key = -(10**9)
@@ -104,13 +106,31 @@ def run_routes(detector, cfg: RouteConfig, video_path, data_dir, json_path, star
 
             if reason is not None:
                 t0 = time.perf_counter()
-                det_masks, _ = detector(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), work_hw)
-                holds, next_hold_id, stats = update_holds(holds, H, det_masks, cfg, next_hold_id)
-                hold_ids = list(holds)
-                masks = np.stack([holds[h] for h in hold_ids]) if hold_ids else np.zeros((0, *work_hw), bool)
-                colors, centers = hold_features(masks, small)
-                labels = cluster_routes(colors, centers, cfg)
-                route_ids, next_route_id = stable_route_ids(labels, hold_ids, routes, next_route_id)
+                det_masks, _, person = detector(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), work_hw, frame_no)
+                if H is None:
+                    hold_route, hold_colors = {}, {}  # new wall: routes are clustered from scratch
+                stats, kept = registry.update(H, det_masks, work_hw, person)
+                hold_ids = list(registry.holds)
+                masks = (np.stack([registry.holds[h] for h in hold_ids]) if hold_ids
+                         else np.zeros((0, *work_hw), bool))
+                colors, centers = hold_features(masks, small, exclude=person)
+                full_colors, _ = hold_features(masks, small)
+                # colors are measured without the climber; a hold that isn't visible now (covered, or kept
+                # without a detection) keeps its last seen color
+                for i, h in enumerate(hold_ids):
+                    if (h in kept or np.isnan(colors[i]).any()) and h in hold_colors:
+                        colors[i] = hold_colors[h]
+                    elif np.isnan(colors[i]).any():
+                        colors[i] = full_colors[i]
+                    else:
+                        hold_colors[h] = colors[i]
+                if any(h in hold_route for h in hold_ids):  # same wall: known holds keep their routes
+                    route_ids, next_route_id = extend_routes(hold_ids, hold_route, colors, centers, cfg,
+                                                             next_route_id)
+                else:  # start or after a cut
+                    labels = cluster_routes(colors, centers, cfg)
+                    route_ids, next_route_id = stable_route_ids(labels, hold_ids, routes, next_route_id)
+                hold_route.update({int(h): int(r) for h, r in zip(hold_ids, route_ids)})
                 routes = {int(r): {h for h, rr in zip(hold_ids, route_ids) if rr == r}
                           for r in set(route_ids.tolist()) - {UNASSIGNED}}
                 file = f"keyframe_{frame_no:06d}.npz"

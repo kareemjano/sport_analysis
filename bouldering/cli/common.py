@@ -6,6 +6,7 @@ import re
 import torch
 
 from ..paths import DEFAULT_VIDEO, ONNX_DIR, OUTPUT_DIR, SAM3_CHECKPOINT
+from ..routes.config import RouteConfig
 
 
 def add_model_args(parser):
@@ -34,19 +35,27 @@ def add_backend_args(parser):
     add_model_args(parser)
 
 
-def add_run_args(parser):
+# hold detection threshold of routes / climb: low enough for small and dark holds (track keeps the pipeline's 0.5)
+ROUTES_DET_SCORE_THRESH = 0.3
+
+
+def add_run_args(parser, det_score_thresh=None):
+    """det_score_thresh: the command's default hold detection threshold (None = the pipeline's 0.5)."""
     parser.add_argument("--video", default=str(DEFAULT_VIDEO))
     parser.add_argument("--prompt", default="climbing hold")
     parser.add_argument("--output", default=None,
-                        help="output video (default: data/bouldering/output/<name from method, model, backend and run options>.mp4)")
+                        help="output video, or a folder for the default name (default: data/bouldering/output/<video name>/"
+                             "<name from method, model, backend and run options>.mp4)")
     parser.add_argument("--render-only", action="store_true",
                         help="skip the model; only re-render --output from the data saved by a previous run")
     parser.add_argument("--stride", type=int, default=1, help="process every n-th frame")
     parser.add_argument("--start", type=int, default=0, help="first frame to process")
     parser.add_argument("--max-frames", type=int, default=None, help="max number of processed frames")
     parser.add_argument("--max-det-interval", type=int, default=None)
-    parser.add_argument("--det-score-thresh", type=float, default=None,
-                        help="detection score threshold (EfficientSAM3 students score holds lower; try 0.2)")
+    parser.add_argument("--det-score-thresh", type=float, default=det_score_thresh,
+                        help=f"hold detection score threshold (default: {det_score_thresh or 0.5}; "
+                             "EfficientSAM3 students score holds lower, try 0.2)")
+    parser.set_defaults(default_det_score_thresh=det_score_thresh)  # output names only list non-defaults
     parser.add_argument("--new-track-thresh", type=float, default=None,
                         help="min detection score to start a new track (default: 0.6, or --det-score-thresh if given)")
     parser.add_argument("--alpha", type=float, default=0.45, help="mask overlay opacity")
@@ -96,6 +105,17 @@ def build_pipeline(args):
     return HoldTrackingPipeline(model, cfg, device=device)
 
 
+def build_pose_estimator(args):
+    """ViTPose+ on ONNX Runtime (--backend onnx: <onnx-dir>/vitpose.onnx) or PyTorch via transformers."""
+    if getattr(args, "backend", "torch") == "onnx":
+        from ..pose.onnx_pose import OnnxPoseEstimator
+
+        return OnnxPoseEstimator(args.onnx_dir, args.providers)
+    from ..pose.vitpose import PoseEstimator
+
+    return PoseEstimator()
+
+
 def _slug(text):
     return re.sub(r"[^a-z0-9.]+", "-", str(text).lower()).strip("-")
 
@@ -118,28 +138,48 @@ def model_tag(args):
     return "-".join(_slug(p) for p in parts if p)
 
 
+def _is_dir_arg(path):
+    return path.endswith(("/", os.sep)) or os.path.isdir(path)
+
+
+def output_dir(args):
+    """Folder the outputs of a run go to: --output's folder if given, else data/bouldering/output/<input name>/."""
+    if args.output:
+        return args.output if _is_dir_arg(args.output) else os.path.dirname(os.path.abspath(args.output))
+    source = getattr(args, "video", None) or getattr(args, "image", None)
+    return str(OUTPUT_DIR / os.path.splitext(os.path.basename(str(source)))[0])
+
+
 def default_output_name(args, method, ext=".mp4"):
-    """<method>_<model variant>[_<backend>][_<run options that differ from the defaults>]<ext>
+    """<output dir>/<method>_<model variant>[_<backend>][_<run options that differ from the defaults>]<ext>
 
     method says how holds are followed between frames, e.g. "tracker" (SAM3 tracker) or
     "motion" (camera-motion warping), so runs that differ in any of these don't overwrite each other.
+    The folder is output_dir(args), so results of other commands for the same --output are found next to it.
     """
     parts = [method, model_tag(args)]
     if hasattr(args, "backend"):
         parts.append(args.backend)
     if getattr(args, "prompt", "climbing hold") != "climbing hold":
         parts.append("p-" + _slug(args.prompt))
+    det = getattr(args, "det_score_thresh", None)
+    if det is not None and det != getattr(args, "default_det_score_thresh", None):
+        parts.append(f"det{det:g}")
+    kf = getattr(args, "max_keyframe_interval", None)
+    if kf is not None and kf != RouteConfig.max_keyframe_interval:
+        parts.append(f"kf{kf}")
     if getattr(args, "start", 0):
         parts.append(f"from{args.start}")
     if getattr(args, "stride", 1) != 1:
         parts.append(f"s{args.stride}")
     if getattr(args, "max_frames", None) is not None:
         parts.append(f"n{args.max_frames}")
-    return str(OUTPUT_DIR / ("_".join(parts) + ext))
+    return os.path.join(output_dir(args), "_".join(parts) + ext)
 
 
 def resolve_output(args, method, ext=".mp4"):
-    """Fill in --output from the parameters when it wasn't given; returns the output path without extension."""
-    args.output = args.output or default_output_name(args, method, ext)
+    """Fill in --output from the parameters when it wasn't given or is a folder; returns the path without extension."""
+    if not args.output or _is_dir_arg(args.output):
+        args.output = default_output_name(args, method, ext)
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     return os.path.splitext(args.output)[0]

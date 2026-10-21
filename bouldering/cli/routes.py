@@ -12,12 +12,12 @@ Examples:
 import time
 
 from ..routes.config import RouteConfig
-from .common import (add_backend_args, add_dataclass_args, add_run_args, build_pipeline, dataclass_from_args,
+from .common import (ROUTES_DET_SCORE_THRESH, add_backend_args, add_dataclass_args, add_run_args, build_pipeline, dataclass_from_args,
                      resolve_output)
 
 
 def add_arguments(parser):
-    add_run_args(parser)
+    add_run_args(parser, det_score_thresh=ROUTES_DET_SCORE_THRESH)
     add_backend_args(parser)
     add_dataclass_args(parser, RouteConfig, "route pipeline (RouteConfig)")
 
@@ -29,7 +29,8 @@ def run(args):
     stem = resolve_output(args, "motion")
     json_path = stem + "_routes.json"
     if not args.render_only:
-        run_routes(HoldDetector(build_pipeline(args)), cfg, args.video, stem + "_routes", json_path,
+        detector = HoldDetector(build_pipeline(args), cache_dir=stem + "_detections", video=args.video)
+        run_routes(detector, cfg, args.video, stem + "_routes", json_path,
                    start=args.start, stride=args.stride, max_frames=args.max_frames, prompt=args.prompt)
     t0 = time.perf_counter()
     n = render_routes(json_path, args.output, video_path=args.video, alpha=args.alpha, show_labels=not args.no_ids)

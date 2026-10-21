@@ -16,10 +16,14 @@ class RouteConfig:
     # keyframes
     new_area: float = 0.15  # take a keyframe if this fraction of the frame is outside the keyframe's view
     min_keyframe_interval: int = 5
-    max_keyframe_interval: int = 0  # 0 = off
+    max_keyframe_interval: int = 30  # frames; re-detect at least this often, also on a still camera (0 = off)
     # hold association across keyframes
     assoc_iou: float = 0.3
     keep_visible: float = 0.5  # keep undetected holds whose warped mask keeps this fraction of its area
+    dup_overlap: float = 0.5  # a detection covering this much of a hold (or of itself) is that hold
+    person_margin: int = 4  # work px around the climber where no new hold may start (person masks are coarse)
+    person_overlap: float = 0.5  # ... i.e. a new detection this much inside the widened person mask is dropped
+    max_missed_keyframes: int = 5  # retire holds not detected for this many keyframes in a row (0 = never)
     # route clustering. Colors are compared by hue for colored holds (shading changes lightness
     # and chroma much more than hue) and by lightness for gray/white/black holds; positions in
     # fractions of the frame width.

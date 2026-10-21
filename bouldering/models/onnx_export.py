@@ -593,3 +593,63 @@ def export(args):
         print(f"  {name}: " + ", ".join(diffs), flush=True)
         del sess, got
         free_memory()
+
+
+# --------------------------------------------------------------------------- ViTPose
+class VitPoseHeatmaps(nn.Module):
+    """ViTPose+ -> heatmaps; dataset_index picks the expert head per crop (0 = COCO-17)."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, pixel_values, dataset_index):
+        return self.model(pixel_values=pixel_values, dataset_index=dataset_index).heatmaps
+
+
+def export_vitpose(output_dir, video_path, pose_model, opset=17, verify=True):
+    """Write vitpose.onnx (pixel_values [B,3,256,192], dataset_index [B] -> heatmaps [B,K,64,48]) and vitpose.json."""
+    import cv2
+    from transformers import AutoProcessor, VitPoseForPoseEstimation
+
+    from ..pose.onnx_pose import VITPOSE_CONFIG, VITPOSE_ONNX
+    from ..pose.processing import crop_inputs
+
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, VITPOSE_ONNX)
+    processor = AutoProcessor.from_pretrained(pose_model)
+    model = VitPoseForPoseEstimation.from_pretrained(pose_model).eval()
+    input_w, input_h = processor.size["width"], processor.size["height"]
+    mean, std = np.array(processor.image_mean, np.float32), np.array(processor.image_std, np.float32)
+
+    # reference input: two crops of the first video frame, with different expert heads
+    cap = cv2.VideoCapture(str(video_path))
+    ok, frame = cap.read()
+    cap.release()
+    assert ok, f"could not read {video_path}"
+    h, w = frame.shape[:2]
+    boxes = np.array([[w * 0.25, h * 0.25, w * 0.5, h * 0.5], [0, 0, w * 0.4, h * 0.6]], np.float32)
+    pixels, _, _ = crop_inputs(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), boxes, input_w, input_h, mean, std)
+    pixel_values, dataset_index = torch.from_numpy(pixels), torch.tensor([0, 1])
+
+    wrapper = VitPoseHeatmaps(model).eval()
+    onnx_export(wrapper, (pixel_values, dataset_index), path, ["pixel_values", "dataset_index"], ["heatmaps"],
+                {"pixel_values": {0: "persons"}, "dataset_index": {0: "persons"}, "heatmaps": {0: "persons"}},
+                opset=opset)
+    config = {
+        "model": pose_model, "input_size": [input_w, input_h], "image_mean": mean.tolist(), "image_std": std.tolist(),
+        "num_experts": model.config.backbone_config.num_experts,
+        "keypoint_names": [model.config.id2label[i] for i in range(len(model.config.id2label))],
+    }
+    with open(os.path.join(output_dir, VITPOSE_CONFIG), "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"[Export] {VITPOSE_CONFIG}")
+
+    if verify:
+        import onnxruntime as ort
+
+        with torch.no_grad():
+            expected = wrapper(pixel_values, dataset_index).numpy()
+        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        got = sess.run(None, {"pixel_values": pixels, "dataset_index": dataset_index.numpy()})[0]
+        print(f"[Verify] vitpose: heatmaps max |diff| {np.abs(expected - got).max():.2e}")

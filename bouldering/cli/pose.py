@@ -1,4 +1,4 @@
-"""Estimate the climber's pose in an image (SAM3 "person" detection + ViTPose+ from transformers).
+"""Estimate the climber's pose in an image (SAM3 "person" detection + ViTPose+; --backend onnx for ONNX Runtime).
 
 Example:
     python -m bouldering pose --backend onnx --image data/bouldering/bouldering.png
@@ -6,12 +6,12 @@ Example:
 import time
 
 from ..paths import DEFAULT_IMAGE
-from .common import add_backend_args, build_pipeline, resolve_output
+from .common import add_backend_args, build_pipeline, build_pose_estimator, resolve_output
 
 
 def add_arguments(parser):
     parser.add_argument("--image", default=str(DEFAULT_IMAGE))
-    parser.add_argument("--output", default=None, help="default: data/bouldering/output/pose_<model>_<backend>.png")
+    parser.add_argument("--output", default=None, help="default: data/bouldering/output/<image name>/pose_<model>_<backend>.png")
     parser.add_argument("--person-prompt", default="person")
     parser.add_argument("--person-score", type=float, default=0.5)
     parser.add_argument("--kpt-thresh", type=float, default=0.3, help="min keypoint score to draw")
@@ -24,12 +24,12 @@ def run(args):
     from PIL import Image
 
     from ..climb.climber import detect_people
-    from ..pose import PoseEstimator, draw_poses
+    from ..pose import draw_poses
 
     resolve_output(args, "pose", ext=".png")
     t0 = time.time()
     pipeline = build_pipeline(args)
-    estimator = PoseEstimator()
+    estimator = build_pose_estimator(args)
     print(f"Loaded models in {time.time() - t0:.1f}s on {estimator.device}")
 
     image = Image.open(args.image).convert("RGB")
